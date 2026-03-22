@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "umamusume-qq-bot"
 version = "0.1.0"
@@ -12,3 +16,13 @@ dependencies = [
 
 [project.scripts]
 umamusume-qq-bot = "umamusume_qq_bot.__main__:main"
+umamusume-qq-bot-proxy = "umamusume_qq_bot.proxy_runner:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

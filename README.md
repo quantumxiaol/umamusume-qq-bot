@@ -11,12 +11,14 @@
 ```env
 AppID=你的QQ机器人AppID
 AppSecret=你的QQ机器人AppSecret
-AGENT_BASE_URL=http://127.0.0.1:1111
+UMAMUSEME_AGENT_URL=http://127.0.0.1:1111
 LOG_LEVEL=INFO
 ```
 
 可选参数：
 
+- `UMAMUSUME_AGENT_URL`（兼容别名）
+- `AGENT_BASE_URL`（旧配置名，向后兼容）
 - `AGENT_TIMEOUT_SECONDS`（默认 `20`）
 - `CHARACTERS_CACHE_TTL_SECONDS`（默认 `300`）
 
@@ -39,6 +41,81 @@ python main.py
 
 启动成功后日志会输出到 `logs/bot.log`，并可看到类似 `QQ bot ready` 的日志。
 
+本地代理测试（无公网白名单 IP 时）：
+
+```bash
+# 方式1：使用环境变量
+export HTTPS_PROXY=http://127.0.0.1:10808
+export HTTP_PROXY=http://127.0.0.1:10808
+uv run umamusume-qq-bot-proxy
+
+# 方式2：命令行显式指定
+uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808
+
+# 仅检查代理参数解析，不真正启动
+uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808 --check-only
+
+# 打开代理调试日志（打印每个 QQ 域名请求是否注入 proxy）
+QQBOT_PROXY_DEBUG=1 uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808
+```
+
+说明：
+- `umamusume-qq-bot-proxy` 仅用于本地调试。它会在启动前 monkey patch `aiohttp.ClientSession`，为 QQ 平台域名请求强制注入代理，并启用 `trust_env=True`，不修改 `botpy` 源码。
+- 生产部署到公网固定 IP 后，直接使用 `uv run umamusume-qq-bot` 即可。
+
+公网固定 IP 部署启动（推荐线上）：
+
+```bash
+# 1) 确保 QQ 平台 IP 白名单已加入服务器公网出口 IP
+# 2) 线上环境建议不要设置代理
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+
+# 3) 先启动 agent（同机部署示例）
+uvicorn umamusume_agent.server.dialogue_server:app --host 127.0.0.1 --port 1111
+
+# 4) 启动 QQ Bot（无需 proxy runner）
+uv run umamusume-qq-bot
+```
+
+说明：
+- 线上建议 `UMAMUSEME_AGENT_URL` 使用内网或本机地址（如 `http://127.0.0.1:1111`）。
+- 该 bot 为主动出网连接 QQ 网关，一般不需要额外开放入站端口给 bot 本体。
+
+白名单与代理出口 IP 排查：
+
+```bash
+# 1) 让 .env 生效
+set -a
+source .env
+set +a
+
+# 2) 指定本地代理
+PROXY="http://127.0.0.1:10808"
+
+# 3) 通过代理查看当前出口 IP（把该 IP 加到 QQ 平台白名单）
+curl -sS -x "$PROXY" https://4.ipw.cn
+curl -sS -x "$PROXY" https://ifconfig.me
+
+# 4) 用 AppID + AppSecret 换取 access_token
+TOKEN_JSON="$(curl -sS -x "$PROXY" https://bots.qq.com/app/getAppAccessToken \
+  -H 'Content-Type: application/json' \
+  --data-raw "{\"appId\":\"$AppID\",\"clientSecret\":\"$AppSecret\"}")"
+echo "$TOKEN_JSON"
+ACCESS_TOKEN="$(printf '%s' "$TOKEN_JSON" | python -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""), end="")' | tr -d '\r\n')"
+
+# 5) 用 access_token 验证 /users/@me
+curl -sS -x "$PROXY" https://api.sgroup.qq.com/users/@me \
+  -H "Authorization: QQBot ${ACCESS_TOKEN}" \
+  -H "X-Union-Appid: ${AppID}" \
+  -w '\nStatus: %{http_code}\n'
+```
+
+结果解释：
+- 返回机器人信息（通常 HTTP 200）表示鉴权与白名单通过。
+- 返回 `11298 接口访问源IP不在白名单` 表示代理出口 IP 还未加入白名单，或代理在切换出口 IP。
+- 返回 `11241 请求头Authorization参数格式错误` 通常表示 `ACCESS_TOKEN` 为空或包含异常字符（换行/引号）。
+- `.env` 里的 `Token` 字段不是这个新鉴权流程的必需项，建议以 `AppID + AppSecret` 实时换取 token 为准。
+
 ### 3) 群聊内使用方式
 
 把机器人拉进群后，群友 `@机器人`：
@@ -48,6 +125,21 @@ python main.py
 - 发送 `当前角色`：查看当前角色
 - 发送 `编号` 或 `角色名`：确定角色
 - 已选角色后，直接 `@机器人 + 文字`：进入角色对话
+
+### 4) 好友私聊使用方式
+
+添加机器人好友后，直接发送消息即可（不需要 `@`）：
+
+- 发送 `角色列表`：查看并进入角色选择模式
+- 发送 `切换角色`：重新选择角色
+- 发送 `当前角色`：查看当前角色
+- 发送 `编号` 或 `角色名`：确定角色
+- 已选角色后，直接发送文字：进入角色对话
+
+用户记忆说明：
+
+- Bot 会使用 QQ 侧用户稳定标识（群聊 `member_openid` / 好友 `user_openid`）生成固定 UUID（`uuid5`）作为 `user_uuid`。
+- 每次切换角色时都会将该 `user_uuid` 传给 `umamusume-agent` 的 `/load_character`，从而按“同一用户 + 同一角色”恢复历史。
 
 ## Umamusume Agent接口简述
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -20,6 +21,13 @@ class AgentHttpError(AgentError):
 
 class AgentSessionExpiredError(AgentError):
     pass
+
+
+@dataclass(frozen=True)
+class LoadCharacterResult:
+    session_id: str
+    user_uuid: str | None = None
+    restored_history_messages: int = 0
 
 
 class AgentClient:
@@ -48,15 +56,29 @@ class AgentClient:
         self._characters_cache = (now, characters)
         return list(characters)
 
-    async def load_character(self, character_name: str) -> str:
+    async def load_character(self, character_name: str, user_uuid: str | None = None) -> LoadCharacterResult:
         payload = {"character_name": character_name}
+        if user_uuid:
+            payload["user_uuid"] = user_uuid
         data = await self._request_json("POST", "/load_character", payload=payload)
         if not isinstance(data, dict):
             raise AgentError("Invalid response from /load_character")
         session_id = str(data.get("session_id", "")).strip()
         if not session_id:
             raise AgentError("Missing session_id in /load_character response")
-        return session_id
+
+        restored_history_messages = data.get("restored_history_messages", 0)
+        try:
+            restored_history_messages = int(restored_history_messages)
+        except (TypeError, ValueError):
+            restored_history_messages = 0
+
+        response_user_uuid = str(data.get("user_uuid", "")).strip() or None
+        return LoadCharacterResult(
+            session_id=session_id,
+            user_uuid=response_user_uuid,
+            restored_history_messages=max(restored_history_messages, 0),
+        )
 
     async def chat(self, session_id: str, message: str, text_only: bool = False) -> str:
         payload = {

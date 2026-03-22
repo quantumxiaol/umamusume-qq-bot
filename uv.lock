@@ -513,14 +513,16 @@ wheels = [
 [[package]]
 name = "umamusume-qq-bot"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "python-dotenv" },
     { name = "qq-botpy" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "qq-botpy", specifier = ">=1.2.1" },
 ]

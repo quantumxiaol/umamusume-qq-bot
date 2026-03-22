@@ -27,10 +27,17 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     if not app_secret:
         raise RuntimeError("Missing required env var: AppSecret")
 
+    agent_base_url = (
+        os.getenv("UMAMUSEME_AGENT_URL", "").strip()
+        or os.getenv("UMAMUSUME_AGENT_URL", "").strip()
+        or os.getenv("AGENT_BASE_URL", "").strip()
+        or "http://127.0.0.1:1111"
+    )
+
     return Settings(
         app_id=app_id,
         app_secret=app_secret,
-        agent_base_url=os.getenv("AGENT_BASE_URL", "http://127.0.0.1:1111").strip().rstrip("/"),
+        agent_base_url=agent_base_url.rstrip("/"),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         agent_timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "20")),
         characters_cache_ttl_seconds=int(os.getenv("CHARACTERS_CACHE_TTL_SECONDS", "300")),

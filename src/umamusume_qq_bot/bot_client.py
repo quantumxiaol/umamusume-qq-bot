@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 import botpy
-from botpy.message import GroupMessage
+from botpy.message import C2CMessage, GroupMessage
 
 from .agent_client import AgentClient, AgentError, AgentSessionExpiredError
 from .config import Settings
@@ -17,7 +17,7 @@ HELP_TEXT = (
     "1) 角色列表\n"
     "2) 切换角色\n"
     "3) 当前角色\n"
-    "直接 @我 + 内容 即可聊天。"
+    "群聊中 @我 + 内容，或好友私聊直接发内容即可聊天。"
 )
 
 
@@ -55,7 +55,7 @@ class UmamusumeBotClient(botpy.Client):
             return
 
         try:
-            response = await self._handle_user_input(group_openid, member_openid, text)
+            response = await self._handle_user_input(user_identity=member_openid, text=text)
         except AgentError as exc:
             LOGGER.warning("Agent request failed while handling message: %s", exc)
             response = "对话服务暂时不可用，请稍后重试。"
@@ -65,8 +65,29 @@ class UmamusumeBotClient(botpy.Client):
 
         await message.reply(content=truncate_reply(response))
 
-    async def _handle_user_input(self, group_openid: str, member_openid: str, text: str) -> str:
-        state = self._store.get(group_openid, member_openid)
+    async def on_c2c_message_create(self, message: C2CMessage):
+        user_openid = getattr(message.author, "user_openid", "") or ""
+        text = normalize_group_text(message.content or "")
+
+        LOGGER.info("c2c_message user=%s msg_id=%s text=%r", user_openid, message.id, text)
+
+        if not user_openid:
+            await message.reply(content="无法识别当前会话身份，请稍后重试。")
+            return
+
+        try:
+            response = await self._handle_user_input(user_identity=user_openid, text=text)
+        except AgentError as exc:
+            LOGGER.warning("Agent request failed while handling c2c message: %s", exc)
+            response = "对话服务暂时不可用，请稍后重试。"
+        except Exception:
+            LOGGER.exception("Unexpected error while handling c2c message user=%s", user_openid)
+            response = "处理消息时发生错误，请稍后重试。"
+
+        await message.reply(content=truncate_reply(response))
+
+    async def _handle_user_input(self, user_identity: str, text: str) -> str:
+        state = self._store.get(user_identity=user_identity)
         normalized = text.strip()
 
         if not normalized:
@@ -120,11 +141,17 @@ class UmamusumeBotClient(botpy.Client):
                 f"{format_character_choices(state.character_options)}"
             )
 
-        session_id = await self._agent.load_character(chosen)
+        load_result = await self._agent.load_character(chosen, user_uuid=state.user_uuid)
         state.selected_character = chosen
-        state.session_id = session_id
+        state.session_id = load_result.session_id
+        if load_result.user_uuid:
+            state.user_uuid = load_result.user_uuid
         state.awaiting_character_choice = False
-        return f"已切换角色为「{chosen}」。现在可以直接 @我 开始聊天。"
+        return (
+            f"已切换角色为「{chosen}」。\n"
+            f"已恢复历史：{load_result.restored_history_messages} 条。\n"
+            "现在可以直接发送消息开始聊天。"
+        )
 
     async def _chat_with_agent(self, state: ConversationState, user_text: str) -> str:
         assert state.session_id is not None
@@ -134,7 +161,10 @@ class UmamusumeBotClient(botpy.Client):
             reply = await self._agent.chat(state.session_id, user_text, text_only=False)
         except AgentSessionExpiredError:
             LOGGER.info("Agent session expired, reload character=%s", state.selected_character)
-            state.session_id = await self._agent.load_character(state.selected_character)
+            load_result = await self._agent.load_character(state.selected_character, user_uuid=state.user_uuid)
+            state.session_id = load_result.session_id
+            if load_result.user_uuid:
+                state.user_uuid = load_result.user_uuid
             reply = await self._agent.chat(state.session_id, user_text, text_only=False)
         except AgentError as exc:
             LOGGER.warning("Agent request failed: %s", exc)
