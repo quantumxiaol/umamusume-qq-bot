@@ -1,6 +1,14 @@
 # Umamusume Agent QQ Bot Server
 
-[Umamusume Agent](https://github.com/quantumxiaol/umamusume-agent)
+基于[Umamusume Agent](https://github.com/quantumxiaol/umamusume-agent)，相当于提供了该项目的qq-bot客户端，该项目可以与角色进行对话。
+
+当然最简单的方法是下一个[酒馆](https://github.com/SillyTavern/SillyTavern)，准备角色卡，酒馆的完成度比这两个高多了。角色的prompt可以从项目[agent-prompt](https://github.com/quantumxiaol/umamusume-agent-prompt/tree/main/examples)获取，我准备了一些现成的。
+
+## 示例
+
+<!-- [对话界面](./png/interface.png) -->
+<img src="./pngs/AdmireVega.png" alt="机器人对话界面" style="zoom:100%;" />
+
 
 ## QQ Bot 快速开始
 
@@ -41,7 +49,7 @@ python main.py
 
 启动成功后日志会输出到 `logs/bot.log`，并可看到类似 `QQ bot ready` 的日志。
 
-本地代理测试（无公网白名单 IP 时）：
+#### 本地代理测试（无公网白名单 IP 时）：
 
 ```bash
 # 方式1：使用环境变量
@@ -51,12 +59,6 @@ uv run umamusume-qq-bot-proxy
 
 # 方式2：命令行显式指定
 uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808
-
-# 仅检查代理参数解析，不真正启动
-uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808 --check-only
-
-# 打开代理调试日志（打印每个 QQ 域名请求是否注入 proxy）
-QQBOT_PROXY_DEBUG=1 uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808
 ```
 
 说明：
@@ -81,7 +83,7 @@ uv run umamusume-qq-bot
 - 线上建议 `UMAMUSEME_AGENT_URL` 使用内网或本机地址（如 `http://127.0.0.1:1111`）。
 - 该 bot 为主动出网连接 QQ 网关，一般不需要额外开放入站端口给 bot 本体。
 
-白名单与代理出口 IP 排查：
+#### 白名单与代理出口 IP 排查：
 
 ```bash
 # 1) 让 .env 生效
