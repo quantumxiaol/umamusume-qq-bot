@@ -12,11 +12,24 @@ from .text_utils import format_character_choices, normalize_group_text, resolve_
 
 LOGGER = logging.getLogger(__name__)
 
-HELP_TEXT = (
+COMMAND_GUIDE_TEXT = (
     "可用命令：\n"
-    "1) 角色列表\n"
-    "2) 切换角色\n"
-    "3) 当前角色\n"
+    "1) 角色列表：查看可用角色并进入选择\n"
+    "2) 切换角色：重新选择角色\n"
+    "3) 切换角色 <角色名/编号>：直接切换角色\n"
+    "4) 当前角色 / 查看角色：查看当前角色\n"
+    "5) 查看记录：查看当前角色最近对话记录\n"
+    "6) 帮助：查看命令说明"
+)
+
+WELCOME_TEXT = (
+    "你好，我是赛马娘角色对话机器人。\n"
+    f"{COMMAND_GUIDE_TEXT}\n"
+    "选好角色后，直接发送内容即可聊天。"
+)
+
+HELP_TEXT = (
+    f"{COMMAND_GUIDE_TEXT}\n"
     "群聊中 @我 + 内容，或好友私聊直接发内容即可聊天。"
 )
 
@@ -89,32 +102,72 @@ class UmamusumeBotClient(botpy.Client):
     async def _handle_user_input(self, user_identity: str, text: str) -> str:
         state = self._store.get(user_identity=user_identity)
         normalized = text.strip()
+        first_interaction = not state.has_seen_welcome
+        if first_interaction:
+            state.has_seen_welcome = True
 
         if not normalized:
-            return await self._prompt_character_selection(state, force_refresh=False)
-
-        if normalized in {"帮助", "help", "/help"}:
-            return HELP_TEXT
-        if normalized in {"当前角色", "当前"}:
+            response = await self._prompt_character_selection(state, force_refresh=False)
+        elif normalized in {"帮助", "help", "/help"}:
+            response = HELP_TEXT
+        elif normalized in {"当前角色", "当前", "查看角色"}:
             if state.selected_character:
-                return f"你当前使用的角色是：{state.selected_character}"
-            return "你还没有选择角色，发送「角色列表」开始。"
-        if normalized in {"角色列表", "切换角色"}:
-            return await self._prompt_character_selection(state, force_refresh=True)
-        if normalized.startswith("切换角色 "):
+                response = f"你当前使用的角色是：{state.selected_character}"
+            else:
+                response = "你还没有选择角色，发送「角色列表」开始。"
+        elif normalized in {"查看记录", "查看历史", "历史记录", "history"}:
+            response = await self._show_history(state)
+        elif normalized in {"角色列表", "切换角色"}:
+            response = await self._prompt_character_selection(state, force_refresh=True)
+        elif normalized.startswith("切换角色 "):
             selection = normalized[len("切换角色 ") :].strip()
             if not selection:
-                return await self._prompt_character_selection(state, force_refresh=True)
-            state.awaiting_character_choice = True
-            return await self._select_character(state, selection)
+                response = await self._prompt_character_selection(state, force_refresh=True)
+            else:
+                state.awaiting_character_choice = True
+                response = await self._select_character(state, selection)
+        elif state.awaiting_character_choice:
+            response = await self._select_character(state, normalized)
+        elif not state.session_id or not state.selected_character:
+            response = await self._prompt_character_selection(state, force_refresh=False)
+        else:
+            response = await self._chat_with_agent(state, normalized)
 
-        if state.awaiting_character_choice:
-            return await self._select_character(state, normalized)
+        if first_interaction:
+            return f"{WELCOME_TEXT}\n\n{response}"
+        return response
 
-        if not state.session_id or not state.selected_character:
-            return await self._prompt_character_selection(state, force_refresh=False)
+    async def _show_history(self, state: ConversationState) -> str:
+        if not state.user_uuid:
+            return "无法识别你的用户身份，请稍后再试。"
+        if not state.selected_character:
+            return "你还没有选择角色，发送「角色列表」开始。"
 
-        return await self._chat_with_agent(state, normalized)
+        messages = await self._agent.get_history(
+            user_uuid=state.user_uuid,
+            character_name=state.selected_character,
+            limit=20,
+        )
+        if not messages:
+            return f"你和「{state.selected_character}」还没有历史记录。"
+
+        visible_messages = messages[-10:]
+        lines = [f"你和「{state.selected_character}」最近 {len(visible_messages)} 条记录："]
+        for index, message in enumerate(visible_messages, start=1):
+            role = str(message.get("role", "")).strip().lower()
+            if role == "assistant":
+                role_label = state.selected_character
+            elif role == "user":
+                role_label = "你"
+            else:
+                role_label = role or "未知"
+
+            content = str(message.get("content", "")).strip().replace("\n", " ")
+            if len(content) > 60:
+                content = f"{content[:60]}..."
+            lines.append(f"{index}. {role_label}：{content}")
+
+        return "\n".join(lines)
 
     async def _prompt_character_selection(self, state: ConversationState, force_refresh: bool) -> str:
         characters = await self._agent.list_characters(force_refresh=force_refresh)

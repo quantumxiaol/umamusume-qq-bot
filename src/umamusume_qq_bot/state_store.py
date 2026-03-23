@@ -11,6 +11,7 @@ class ConversationState:
     user_uuid: str | None = None
     selected_character: str | None = None
     session_id: str | None = None
+    has_seen_welcome: bool = False
     awaiting_character_choice: bool = False
     character_options: list[str] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)

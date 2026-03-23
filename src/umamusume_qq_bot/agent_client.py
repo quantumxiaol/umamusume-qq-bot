@@ -94,10 +94,36 @@ class AgentClient:
             raise
         return self._extract_reply(data)
 
-    async def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    async def get_history(self, user_uuid: str, character_name: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"user_uuid": user_uuid}
+        if character_name:
+            params["character_name"] = character_name
+        params["limit"] = max(limit, 0)
+
+        data = await self._request_json("GET", "/history", params=params)
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from /history")
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return []
+        return [item for item in messages if isinstance(item, dict)]
+
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
         session = await self._get_session()
         url = f"{self._base_url}{path}"
-        async with session.request(method=method, url=url, json=payload, timeout=self._timeout) as response:
+        async with session.request(
+            method=method,
+            url=url,
+            json=payload,
+            params=params,
+            timeout=self._timeout,
+        ) as response:
             body = await response.text()
             if response.status >= 400:
                 raise AgentHttpError(response.status, body)
