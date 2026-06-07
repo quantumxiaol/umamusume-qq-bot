@@ -5,6 +5,7 @@ import logging
 from .agent_client import AgentClient
 from .bot_client import UmamusumeBotClient
 from .config import load_settings
+from .force_ipv4 import install_force_ipv4
 from .logging_setup import setup_logging
 from .state_store import ConversationStore
 
@@ -14,6 +15,8 @@ def main() -> None:
     log_file = setup_logging(settings.log_level)
 
     logger = logging.getLogger(__name__)
+    install_force_ipv4()
+    logger.info("Forced QQ bot aiohttp/botpy traffic to IPv4")
     logger.info("Starting QQ bot, logs=%s agent_base_url=%s", log_file, settings.agent_base_url)
 
     client = UmamusumeBotClient(

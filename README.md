@@ -29,6 +29,7 @@ LOG_LEVEL=INFO
 - `AGENT_BASE_URL`（旧配置名，向后兼容）
 - `AGENT_TIMEOUT_SECONDS`（默认 `20`）
 - `CHARACTERS_CACHE_TTL_SECONDS`（默认 `300`）
+- QQ OpenAPI / WebSocket 出站连接会在启动时强制走 IPv4，避免双栈网络优先使用 IPv6 导致 QQ IP 白名单校验失败。
 
 ### 2) 启动 Bot
 
@@ -117,6 +118,8 @@ curl -sS -x "$PROXY" https://api.sgroup.qq.com/users/@me \
 - 返回 `11298 接口访问源IP不在白名单` 表示代理出口 IP 还未加入白名单，或代理在切换出口 IP。
 - 返回 `11241 请求头Authorization参数格式错误` 通常表示 `ACCESS_TOKEN` 为空或包含异常字符（换行/引号）。
 - `.env` 里的 `Token` 字段不是这个新鉴权流程的必需项，建议以 `AppID + AppSecret` 实时换取 token 为准。
+
+如果不走代理、只验证当前 IPv4 出口，可把上面的 `curl` 改成 `curl -4`。Bot 启动时也会强制 aiohttp/botpy 使用 IPv4。
 
 ### 3) 群聊内使用方式
 
