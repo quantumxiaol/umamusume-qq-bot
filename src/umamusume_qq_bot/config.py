@@ -15,6 +15,7 @@ class Settings:
     log_level: str
     agent_timeout_seconds: float
     characters_cache_ttl_seconds: int
+    agent_api_access_key: str = ""
 
 
 def load_settings(env_file: str | Path = ".env") -> Settings:
@@ -33,12 +34,18 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         or os.getenv("AGENT_BASE_URL", "").strip()
         or "http://127.0.0.1:1111"
     )
+    agent_api_access_key = (
+        os.getenv("UMAMUSEME_AGENT_API_ACCESS_KEY", "").strip()
+        or os.getenv("UMAMUSUME_AGENT_API_ACCESS_KEY", "").strip()
+        or os.getenv("AGENT_API_ACCESS_KEY", "").strip()
+    )
 
     return Settings(
         app_id=app_id,
         app_secret=app_secret,
         agent_base_url=agent_base_url.rstrip("/"),
+        agent_api_access_key=agent_api_access_key,
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
-        agent_timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "20")),
+        agent_timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "600")),
         characters_cache_ttl_seconds=int(os.getenv("CHARACTERS_CACHE_TTL_SECONDS", "300")),
     )

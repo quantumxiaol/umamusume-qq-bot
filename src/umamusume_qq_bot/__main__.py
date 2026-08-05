@@ -25,6 +25,7 @@ def main() -> None:
             base_url=settings.agent_base_url,
             timeout_seconds=settings.agent_timeout_seconds,
             characters_cache_ttl_seconds=settings.characters_cache_ttl_seconds,
+            api_access_key=settings.agent_api_access_key,
         ),
         state_store=ConversationStore(),
     )

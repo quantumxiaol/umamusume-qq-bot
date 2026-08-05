@@ -31,10 +31,22 @@ class LoadCharacterResult:
 
 
 class AgentClient:
-    def __init__(self, base_url: str, timeout_seconds: float, characters_cache_ttl_seconds: int = 300):
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float,
+        characters_cache_ttl_seconds: int = 300,
+        api_access_key: str = "",
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._characters_cache_ttl_seconds = characters_cache_ttl_seconds
+        normalized_api_access_key = api_access_key.strip()
+        self._headers = (
+            {"X-API-Key": normalized_api_access_key}
+            if normalized_api_access_key
+            else None
+        )
         self._characters_cache: tuple[float, list[str]] | None = None
         self._session: aiohttp.ClientSession | None = None
 
@@ -122,6 +134,7 @@ class AgentClient:
             url=url,
             json=payload,
             params=params,
+            headers=self._headers,
             timeout=self._timeout,
         ) as response:
             body = await response.text()
@@ -152,12 +165,36 @@ class AgentClient:
 
     @staticmethod
     def _extract_reply(data: Any) -> str:
+        if isinstance(data, str):
+            if data.strip():
+                return data
+            raise AgentError("Empty response from /chat")
+
         if isinstance(data, dict):
-            for key in ("reply", "message", "text"):
+            # Legacy backends returned a plain string in one of these fields.
+            for key in ("reply", "text", "message"):
                 value = data.get(key)
                 if isinstance(value, str) and value.strip():
                     return value
-            return json.dumps(data, ensure_ascii=False)
-        if isinstance(data, str):
-            return data
-        return str(data)
+
+            # JSON reply v2 returns action/dialogue at the top level. Some
+            # compatible servers expose the same fields only in message/reply.
+            structured_sources = [data]
+            for key in ("message", "reply"):
+                value = data.get(key)
+                if isinstance(value, dict):
+                    structured_sources.append(value)
+
+            for source in structured_sources:
+                dialogue = source.get("dialogue")
+                if not isinstance(dialogue, str) or not dialogue.strip():
+                    dialogue = source.get("content")
+                if not isinstance(dialogue, str) or not dialogue.strip():
+                    continue
+
+                action = source.get("action")
+                if isinstance(action, str) and action.strip():
+                    return f"动作：{action.strip()}\n对白：{dialogue.strip()}"
+                return dialogue.strip()
+
+        raise AgentError("Invalid response from /chat: missing reply text")

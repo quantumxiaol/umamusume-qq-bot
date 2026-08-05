@@ -20,14 +20,21 @@
 AppID=你的QQ机器人AppID
 AppSecret=你的QQ机器人AppSecret
 UMAMUSEME_AGENT_URL=http://127.0.0.1:1111
+UMAMUSEME_AGENT_API_ACCESS_KEY=与后端API_ACCESS_KEY相同的值
 LOG_LEVEL=INFO
 ```
+
+新版 Agent 设置了 `API_ACCESS_KEY` 时，Bot 必须配置
+`UMAMUSEME_AGENT_API_ACCESS_KEY`。Bot 会在所有 Agent API 请求中发送
+`X-API-Key`；后端未启用 `API_ACCESS_KEY` 时可以留空。
 
 可选参数：
 
 - `UMAMUSUME_AGENT_URL`（兼容别名）
 - `AGENT_BASE_URL`（旧配置名，向后兼容）
-- `AGENT_TIMEOUT_SECONDS`（默认 `20`）
+- `UMAMUSUME_AGENT_API_ACCESS_KEY`（正确拼写的兼容别名）
+- `AGENT_API_ACCESS_KEY`（兼容别名）
+- `AGENT_TIMEOUT_SECONDS`（默认 `600`，覆盖新版后端的模型调用与有限重试时间）
 - `CHARACTERS_CACHE_TTL_SECONDS`（默认 `300`）
 - QQ OpenAPI / WebSocket 出站连接会在启动时强制走 IPv4，避免双栈网络优先使用 IPv6 导致 QQ IP 白名单校验失败。
 
@@ -153,22 +160,50 @@ curl -sS -x "$PROXY" https://api.sgroup.qq.com/users/@me \
 ## Umamusume Agent接口简述
 
 - `POST /load_character`：加载角色并创建会话
-- `POST /chat`：非流式对话
+- `POST /chat`：非流式对话，返回结构化 `action` / `dialogue`
 - `POST /chat_stream`：流式对话（SSE）
 - `GET /characters`：可用角色列表
+- `GET /capabilities`：后端能力协商
+- `GET /history`：查询指定用户的对话历史
 - `GET /audio?path=...`：音频文件访问
+
+后端配置了 `API_ACCESS_KEY` 时，除根路径和音频等少数公开路由外，请求都必须携带：
+
+```http
+X-API-Key: <API_ACCESS_KEY>
+```
 
 ### 对话请求参数（`/chat` 与 `/chat_stream`）
 
 - `session_id`：会话 ID（由 `/load_character` 返回）
 - `message`：用户输入文本
 - `generate_voice`：是否生成语音（默认 `false`）
-- `text_only`：是否纯文本模式（默认 `false`）
+- `text_only`：兼容字段；设为 `true` 时禁用语音，不再改变结构化回复格式
 
 参数组合说明：
-- `generate_voice=false, text_only=false`：结构化文本回复（通常含“动作/对白”标签），不生成语音。
+- `generate_voice=false, text_only=false`：返回结构化 `action` / `dialogue`，不生成语音。
 - `generate_voice=true, text_only=false`：结构化文本回复，并触发 TTS 生成语音。
-- `text_only=true`：纯文本回复（无“动作/对白”标签），并强制不生成语音（即使 `generate_voice=true` 也会忽略）。
+- `text_only=true`：仍返回结构化动作与对白，但强制不生成语音。
+
+新版 `/chat` 返回示例：
+
+```json
+{
+  "action": "爱慕织姬轻轻点头。",
+  "dialogue": "训练员，我们开始吧。",
+  "message": {
+    "schema_version": 2,
+    "role": "assistant",
+    "content": "训练员，我们开始吧。",
+    "action": "爱慕织姬轻轻点头。",
+    "dialogue": "训练员，我们开始吧。",
+    "source_format": "json_v2"
+  }
+}
+```
+
+Bot 会把它转换为适合 QQ 展示的两行“动作/对白”文本，同时继续兼容旧版
+`{"reply":"..."}` 响应。
 
 ### 会话生命周期与内存控制
 
@@ -178,14 +213,15 @@ curl -sS -x "$PROXY" https://api.sgroup.qq.com/users/@me \
 - 对话历史会按 `DIALOGUE_SESSION_HISTORY_MAX_MESSAGES` 自动裁剪，避免单会话无限增长。
 - 会话过期或被删除后，再用旧 `session_id` 调用 `/chat` 会返回 `404`，需要重新 `/load_character` 获取新会话。
 
-## 无前端：纯文本模式如何选定角色
+## 无前端：如何选定角色并对话
 
 核心逻辑：角色是通过 `POST /load_character` 绑定到 `session_id` 的。后续 `/chat` 只需要传这个 `session_id`。
 
 ### 1) 查看可用角色（可选）
 
 ```bash
-curl -s http://127.0.0.1:1111/characters
+curl -s http://127.0.0.1:1111/characters \
+  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY"
 ```
 
 ### 2) 选定角色并创建会话
@@ -193,6 +229,7 @@ curl -s http://127.0.0.1:1111/characters
 ```bash
 curl -s -X POST http://127.0.0.1:1111/load_character \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY" \
   -d '{"character_name":"爱慕织姬"}'
 ```
 
@@ -205,11 +242,12 @@ curl -s -X POST http://127.0.0.1:1111/load_character \
 }
 ```
 
-### 3) 用该会话进行纯文本对话
+### 3) 用该会话进行对话
 
 ```bash
 curl -s -X POST http://127.0.0.1:1111/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY" \
   -d '{
     "session_id":"0f0f7f4f-xxxx-xxxx-xxxx-8b0b5f9a8d2b",
     "message":"你好，今天训练安排是什么？",
@@ -218,23 +256,3 @@ curl -s -X POST http://127.0.0.1:1111/chat \
 ```
 
 如果想切换角色，重新调用一次 `/load_character` 获取新的 `session_id` 即可。
-
-### 4) 示例
-```bash
-(umamusume-agent)  umamusume-agent % curl -s -X POST http://127.0.0.1:1111/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id":"4863e6ed-d",
-    "message":"你好，今天训练安排是什么？",
-    "text_only":false
-  }'
-{"reply":"动作：抬起头，耳朵轻微抖动，目光直视训练员  \n对白：今天的训练计划我已经看过了。如果可以，我想增加一些长距离的耐力训练。我必须得多加训练，赢得比赛，绝对要成为那闪耀的一等星。你觉得这样安排如何？"}%                                             
-(umamusume-agent) umamusume-agent % curl -s -X POST http://127.0.0.1:1111/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id":"4863e6ed-d",
-    "message":"我刚才问你什么了？", 
-    "text_only":false
-  }'
-{"reply":"动作：耳朵轻轻向后压，眼神略显不耐却又藏着一丝无奈  \n对白：你刚才问了我今天的训练安排。既然你选择了我，这些基本的事情，你应该记得吧。"}% 
-```
