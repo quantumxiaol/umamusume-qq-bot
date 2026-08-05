@@ -12,6 +12,7 @@ from .agent_client import (
     AgentError,
     AgentHttpError,
     AgentSessionExpiredError,
+    LoadCharacterResult,
 )
 from .config import Settings
 from .dialogue_commands import (
@@ -75,6 +76,7 @@ class UmamusumeBotClient(botpy.Client):
 
     async def close(self) -> None:
         await self._agent.close()
+        self._store.close()
         await super().close()
 
     async def on_ready(self):
@@ -143,10 +145,14 @@ class UmamusumeBotClient(botpy.Client):
         if first_interaction:
             state.has_seen_welcome = True
 
-        response = await self._dispatch_input(state, normalized)
-        if first_interaction:
-            return f"{WELCOME_TEXT}\n\n{response}"
-        return response
+        try:
+            response = await self._dispatch_input(state, normalized)
+            if first_interaction:
+                return f"{WELCOME_TEXT}\n\n{response}"
+            return response
+        finally:
+            state.updated_at = datetime.now().timestamp()
+            self._store.save(state)
 
     async def _dispatch_input(self, state: ConversationState, normalized: str) -> str:
         if normalized in {"帮助", "help", "/help"}:
@@ -259,11 +265,22 @@ class UmamusumeBotClient(botpy.Client):
         if not state.selected_character:
             return "你还没有选择角色，发送「角色列表」开始。"
 
-        messages = await self._agent.get_history(
-            user_uuid=state.user_uuid,
-            character_name=state.selected_character,
-            limit=20,
+        messages = self._store.get_single_history(
+            state.user_uuid,
+            state.selected_character,
         )
+        if not messages:
+            messages = await self._agent.get_history(
+                user_uuid=state.user_uuid,
+                character_name=state.selected_character,
+                limit=0,
+            )
+            if messages:
+                self._store.replace_single_history(
+                    state.user_uuid,
+                    state.selected_character,
+                    messages,
+                )
         if not messages:
             return f"你和「{state.selected_character}」还没有历史记录。"
 
@@ -317,9 +334,13 @@ class UmamusumeBotClient(botpy.Client):
             state.user_uuid = load_result.user_uuid
         state.awaiting_character_choice = False
         state.queued_events = []
+        restored_messages = await self._synchronize_single_history(
+            state,
+            backend_restored_messages=load_result.restored_history_messages,
+        )
         return (
             f"已切换角色为「{chosen}」。\n"
-            f"已恢复历史：{load_result.restored_history_messages} 条。\n"
+            f"已恢复历史：{restored_messages} 条。\n"
             "可直接聊天，也可使用「动作」「环境」等剧情输入。"
         )
 
@@ -367,13 +388,7 @@ class UmamusumeBotClient(botpy.Client):
             )
         except AgentSessionExpiredError:
             LOGGER.info("Agent session expired, reload character=%s", state.selected_character)
-            load_result = await self._agent.load_character(
-                state.selected_character,
-                user_uuid=state.user_uuid,
-            )
-            state.session_id = load_result.session_id
-            if load_result.user_uuid:
-                state.user_uuid = load_result.user_uuid
+            await self._reload_single_session(state)
             reply = await self._agent.chat(
                 state.session_id,
                 message,
@@ -381,14 +396,127 @@ class UmamusumeBotClient(botpy.Client):
                 generate_voice=False,
                 dialogue_event=event_fields,
             )
+        if state.user_uuid:
+            self._store.append_single_messages(
+                state.user_uuid,
+                state.selected_character,
+                [
+                    *[
+                        self._single_user_history_record(event)
+                        for event in context_events
+                    ],
+                    self._single_user_history_record(final_event),
+                    {
+                        "role": "assistant",
+                        "content": reply,
+                        "source_format": "qq_bot_local",
+                    },
+                ],
+            )
         return f"{state.selected_character}：\n{reply}"
+
+    async def _reload_single_session(self, state: ConversationState) -> int:
+        load_result = await self._load_single_session(state)
+        return await self._synchronize_single_history(
+            state,
+            backend_restored_messages=load_result.restored_history_messages,
+        )
+
+    async def _load_single_session(
+        self,
+        state: ConversationState,
+    ) -> LoadCharacterResult:
+        assert state.selected_character is not None
+        load_result = await self._agent.load_character(
+            state.selected_character,
+            user_uuid=state.user_uuid,
+        )
+        state.session_id = load_result.session_id
+        if load_result.user_uuid:
+            state.user_uuid = load_result.user_uuid
+        return load_result
+
+    async def _synchronize_single_history(
+        self,
+        state: ConversationState,
+        backend_restored_messages: int = 0,
+    ) -> int:
+        if not state.user_uuid or not state.selected_character or not state.session_id:
+            return 0
+        local_messages = self._store.get_single_history(
+            state.user_uuid,
+            state.selected_character,
+        )
+        history_read_failed = False
+        try:
+            backend_messages = await self._agent.get_history(
+                state.user_uuid,
+                state.selected_character,
+                limit=0,
+            )
+        except AgentError as exc:
+            LOGGER.warning(
+                "Could not read Agent history during synchronization, use local copy: %s",
+                exc,
+            )
+            backend_messages = []
+            history_read_failed = True
+
+        if backend_messages:
+            if len(backend_messages) >= len(local_messages):
+                self._store.replace_single_history(
+                    state.user_uuid,
+                    state.selected_character,
+                    backend_messages,
+                )
+                return len(backend_messages)
+            # A shorter remote copy means the Space retained only part of the
+            # conversation. Clear it before importing to avoid duplicate JSONL
+            # records across old and newly imported Agent sessions.
+            await self._agent.clear_history(
+                state.user_uuid,
+                state.selected_character,
+            )
+            await self._agent.import_history(
+                state.session_id,
+                local_messages,
+                replace_current=True,
+                source="qq_bot_local_restore",
+            )
+            return len(local_messages)
+        if local_messages:
+            if history_read_failed and backend_restored_messages > 0:
+                return max(len(local_messages), backend_restored_messages)
+            await self._agent.import_history(
+                state.session_id,
+                local_messages,
+                replace_current=True,
+                source="qq_bot_local_restore",
+            )
+            return len(local_messages)
+        return max(len(backend_messages), int(backend_restored_messages or 0))
+
+    @staticmethod
+    def _single_user_history_record(event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "role": "user",
+            "content": str(event.get("content", "")).strip(),
+            "speaker": event.get("speaker"),
+            "event_type": event.get("event_type") or "dialogue",
+            "event_schema_version": 1,
+        }
 
     async def _clear_current_history(self, state: ConversationState) -> str:
         if not state.user_uuid or not state.selected_character:
             return "请先选择角色。"
         result = await self._agent.clear_history(state.user_uuid, state.selected_character)
+        locally_deleted = self._store.clear_single_history(
+            state.user_uuid,
+            state.selected_character,
+        )
         state.queued_events = []
         deleted_messages = int(result.get("deleted_messages", 0) or 0)
+        deleted_messages = max(deleted_messages, locally_deleted)
         return f"已清空你和「{state.selected_character}」的历史记录（{deleted_messages} 条）。"
 
     async def _regenerate_single_reply(
@@ -398,11 +526,22 @@ class UmamusumeBotClient(botpy.Client):
     ) -> str:
         if not state.user_uuid or not state.selected_character or not state.session_id:
             return "请先选择角色并完成至少一轮对话。"
-        messages = await self._agent.get_history(
+        messages = self._store.get_single_history(
             state.user_uuid,
             state.selected_character,
-            limit=0,
         )
+        if not messages:
+            messages = await self._agent.get_history(
+                state.user_uuid,
+                state.selected_character,
+                limit=0,
+            )
+            if messages:
+                self._store.replace_single_history(
+                    state.user_uuid,
+                    state.selected_character,
+                    messages,
+                )
         user_index = next(
             (
                 index
@@ -418,11 +557,41 @@ class UmamusumeBotClient(botpy.Client):
         content = (edited_text or str(original.get("content", ""))).strip()
         if not content:
             return "编辑后的内容不能为空。"
-        await self._agent.import_history(
-            state.session_id,
-            messages[:user_index],
-            replace_current=True,
-            source="qq_bot_regenerate_last_user",
+        prefix_messages = messages[:user_index]
+        await self._agent.clear_history(
+            state.user_uuid,
+            state.selected_character,
+        )
+        try:
+            await self._agent.import_history(
+                state.session_id,
+                prefix_messages,
+                replace_current=True,
+                source="qq_bot_regenerate_last_user",
+            )
+        except AgentHttpError as exc:
+            if exc.status != 404:
+                state.session_id = None
+                raise
+            await self._load_single_session(state)
+            assert state.session_id is not None
+            try:
+                await self._agent.import_history(
+                    state.session_id,
+                    prefix_messages,
+                    replace_current=True,
+                    source="qq_bot_regenerate_last_user",
+                )
+            except AgentError:
+                state.session_id = None
+                raise
+        except AgentError:
+            state.session_id = None
+            raise
+        self._store.replace_single_history(
+            state.user_uuid,
+            state.selected_character,
+            prefix_messages,
         )
         state.queued_events = []
         event = build_dialogue_event(content, input_mode_from_history(original))
@@ -613,6 +782,8 @@ class UmamusumeBotClient(botpy.Client):
         state.director_session_id = str(snapshot.get("session_id", "")).strip() or None
         state.last_director_event_id = self._latest_character_reply_id(snapshot.get("events"))
         state.queued_events = []
+        if state.user_uuid and state.director_session_id:
+            self._store.save_director_snapshot(state.user_uuid, snapshot)
 
     @staticmethod
     def _latest_character_reply_id(events: Any) -> str | None:
@@ -745,6 +916,11 @@ class UmamusumeBotClient(botpy.Client):
         state.director_snapshot["turn_index"] = int(result.get("turn_index", 0) or 0)
         state.director_snapshot["last_active_at"] = datetime.now().isoformat()
         state.last_director_event_id = self._latest_character_reply_id(current_events)
+        if state.user_uuid and state.director_session_id:
+            self._store.save_director_snapshot(
+                state.user_uuid,
+                state.director_snapshot,
+            )
 
     async def _restore_director_session(self, state: ConversationState) -> None:
         assert state.director_session_id is not None
@@ -766,7 +942,34 @@ class UmamusumeBotClient(botpy.Client):
     async def _show_director_history(self, state: ConversationState) -> str:
         if not state.user_uuid:
             return "无法识别用户身份。"
-        scenes = await self._agent.get_director_history(state.user_uuid, limit=20)
+        try:
+            remote_scenes = await self._agent.get_director_history(
+                state.user_uuid,
+                limit=20,
+            )
+        except AgentError as exc:
+            LOGGER.warning("Could not read Agent director history, use local copy: %s", exc)
+            remote_scenes = []
+        local_scenes = [
+            self._director_snapshot_summary(snapshot)
+            for snapshot in self._store.list_director_snapshots(
+                state.user_uuid,
+                limit=20,
+            )
+        ]
+        # Local snapshots are the durable source for this Bot and must remain
+        # visible even when the remote list already contains 20 older scenes.
+        scenes = list(local_scenes)
+        known_session_ids = {
+            str(scene.get("session_id", ""))
+            for scene in scenes
+            if isinstance(scene, dict)
+        }
+        scenes.extend(
+            scene
+            for scene in remote_scenes
+            if str(scene.get("session_id", "")) not in known_session_ids
+        )
         state.director_history_options = scenes
         if not scenes:
             return "还没有可恢复的导演场景。"
@@ -782,6 +985,57 @@ class UmamusumeBotClient(botpy.Client):
                 lines.append(f"   {preview[:80]}")
         lines.append("继续：恢复场景 <编号>")
         return "\n".join(lines)
+
+    @staticmethod
+    def _director_snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+        template = (
+            snapshot.get("template")
+            if isinstance(snapshot.get("template"), dict)
+            else {}
+        )
+        participants = (
+            snapshot.get("participants")
+            if isinstance(snapshot.get("participants"), list)
+            else []
+        )
+        character_names: list[str] = []
+        for participant in participants:
+            actor = participant.get("actor") if isinstance(participant, dict) else None
+            if not isinstance(actor, dict):
+                continue
+            if actor.get("actor_type") in {"umamusume", "npc"}:
+                name = str(actor.get("display_name", "")).strip()
+                if name:
+                    character_names.append(name)
+        preview = ""
+        events = snapshot.get("events")
+        if isinstance(events, list):
+            for event in reversed(events):
+                if not isinstance(event, dict) or event.get("hidden"):
+                    continue
+                preview = str(
+                    event.get("dialogue")
+                    or event.get("content")
+                    or event.get("action")
+                    or ""
+                ).strip()
+                if preview:
+                    break
+        scene_state = (
+            snapshot.get("scene_state")
+            if isinstance(snapshot.get("scene_state"), dict)
+            else {}
+        )
+        return {
+            "session_id": str(snapshot.get("session_id", "")),
+            "scene_name": str(template.get("name", "导演场景")),
+            "character_names": character_names,
+            "location": str(scene_state.get("location", "")),
+            "turn_index": int(snapshot.get("turn_index", 0) or 0),
+            "preview": preview[:160],
+            "updated_at": str(snapshot.get("last_active_at", "")),
+            "local_snapshot": True,
+        }
 
     def _resolve_history_scene(
         self,
@@ -815,10 +1069,25 @@ class UmamusumeBotClient(botpy.Client):
         scene = self._resolve_history_scene(selection, state.director_history_options)
         if not scene:
             return "未找到场景，请先发送「场景历史」查看编号。"
-        snapshot = await self._agent.resume_director_history(
-            str(scene.get("session_id", "")),
-            state.user_uuid,
-        )
+        session_id = str(scene.get("session_id", ""))
+        try:
+            snapshot = await self._agent.resume_director_history(
+                session_id,
+                state.user_uuid,
+            )
+        except AgentHttpError as exc:
+            if exc.status != 404:
+                raise
+            local_snapshot = self._store.get_director_snapshot(
+                state.user_uuid,
+                session_id,
+            )
+            if not local_snapshot:
+                raise
+            snapshot = await self._agent.recover_director_session(
+                local_snapshot,
+                state.user_uuid,
+            )
         self._apply_director_snapshot(state, snapshot)
         return f"已恢复导演场景。\n{self._format_director_snapshot(snapshot)}"
 
@@ -876,6 +1145,11 @@ class UmamusumeBotClient(botpy.Client):
                 state.director_snapshot["scene_state"] = result["scene_state"]
             state.director_snapshot["last_active_at"] = datetime.now().isoformat()
         state.last_director_event_id = str(event.get("event_id", event_id))
+        if state.director_snapshot:
+            self._store.save_director_snapshot(
+                state.user_uuid,
+                state.director_snapshot,
+            )
         return f"已重新生成角色回复。\n{self._format_director_events([event])}"
 
     async def _delete_director_history_command(
@@ -897,7 +1171,12 @@ class UmamusumeBotClient(botpy.Client):
         if not scene:
             return "未找到场景，请先发送「场景历史」查看编号。"
         session_id = str(scene.get("session_id", ""))
-        await self._agent.delete_director_history(session_id, state.user_uuid)
+        try:
+            await self._agent.delete_director_history(session_id, state.user_uuid)
+        except AgentHttpError as exc:
+            if exc.status != 404:
+                raise
+        self._store.delete_director_snapshot(state.user_uuid, session_id)
         state.director_history_options = [
             item
             for item in state.director_history_options

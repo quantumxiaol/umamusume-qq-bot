@@ -14,7 +14,12 @@ def main() -> None:
     log_file = setup_logging(settings.log_level)
 
     logger = logging.getLogger(__name__)
-    logger.info("Starting QQ bot, logs=%s agent_base_url=%s", log_file, settings.agent_base_url)
+    logger.info(
+        "Starting QQ bot, logs=%s database=%s agent_base_url=%s",
+        log_file,
+        settings.database_path,
+        settings.agent_base_url,
+    )
 
     client = UmamusumeBotClient(
         settings=settings,
@@ -24,7 +29,10 @@ def main() -> None:
             characters_cache_ttl_seconds=settings.characters_cache_ttl_seconds,
             api_access_key=settings.agent_api_access_key,
         ),
-        state_store=ConversationStore(),
+        state_store=ConversationStore(
+            database_path=settings.database_path,
+            history_max_messages=settings.local_history_max_messages,
+        ),
     )
     client.run(appid=settings.app_id, secret=settings.app_secret)
 

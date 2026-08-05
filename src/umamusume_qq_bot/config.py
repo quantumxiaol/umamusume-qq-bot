@@ -16,6 +16,8 @@ class Settings:
     agent_timeout_seconds: float
     characters_cache_ttl_seconds: int
     agent_api_access_key: str = ""
+    database_path: str = "data/bot.sqlite3"
+    local_history_max_messages: int = 1000
 
 
 def load_settings(env_file: str | Path = ".env") -> Settings:
@@ -48,4 +50,10 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         agent_timeout_seconds=float(os.getenv("AGENT_TIMEOUT_SECONDS", "600")),
         characters_cache_ttl_seconds=int(os.getenv("CHARACTERS_CACHE_TTL_SECONDS", "300")),
+        database_path=os.getenv("BOT_DATABASE_PATH", "data/bot.sqlite3").strip()
+        or "data/bot.sqlite3",
+        local_history_max_messages=max(
+            0,
+            int(os.getenv("LOCAL_HISTORY_MAX_MESSAGES", "1000")),
+        ),
     )

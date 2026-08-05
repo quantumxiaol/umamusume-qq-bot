@@ -2,7 +2,8 @@
 
 将 [Umamusume Agent](https://github.com/quantumxiaol/umamusume-agent) 接入 QQ 官方机器人。
 当前版本使用 QQ WebSocket Gateway 接收群聊和私聊消息，并适配 Agent `0.2.0`
-的 API key、结构化剧情事件、历史管理和多角色导演模式。
+的 API key、结构化剧情事件、历史管理和多角色导演模式。Bot 使用本地 SQLite
+保存恢复数据，即使 Hugging Face Space 重启并丢失临时文件，也能重建对话上下文。
 
 ## 当前连接方式
 
@@ -34,6 +35,8 @@ AppSecret=你的QQ机器人AppSecret
 UMAMUSEME_AGENT_URL=http://127.0.0.1:1111
 UMAMUSEME_AGENT_API_ACCESS_KEY="与后端API_ACCESS_KEY相同的值"
 LOG_LEVEL=INFO
+BOT_DATABASE_PATH=data/bot.sqlite3
+LOCAL_HISTORY_MAX_MESSAGES=1000
 ```
 
 使用当前 Hugging Face Space：
@@ -44,6 +47,8 @@ AppSecret=你的QQ机器人AppSecret
 UMAMUSEME_AGENT_URL=https://quantumxiaol-umamusume-agent.hf.space
 UMAMUSEME_AGENT_API_ACCESS_KEY="对应Space的API_ACCESS_KEY"
 LOG_LEVEL=INFO
+BOT_DATABASE_PATH=data/bot.sqlite3
+LOCAL_HISTORY_MAX_MESSAGES=1000
 ```
 
 Agent 设置了 `API_ACCESS_KEY` 时，Bot 会在所有受保护请求中发送 `X-API-Key`。
@@ -59,6 +64,9 @@ Agent 设置了 `API_ACCESS_KEY` 时，Bot 会在所有受保护请求中发送 
 - `AGENT_TIMEOUT_SECONDS`：默认 `600`
 - `CHARACTERS_CACHE_TTL_SECONDS`：默认 `300`
 - `LOG_LEVEL`：默认 `INFO`
+- `BOT_DATABASE_PATH`：本地恢复数据库，默认 `data/bot.sqlite3`
+- `LOCAL_HISTORY_MAX_MESSAGES`：每名用户、每个角色最多保留的本地消息数，默认 `1000`；设为
+  `0` 表示不限制
 
 ### 2. 启动
 
@@ -84,6 +92,14 @@ python main.py
 ```
 
 日志写入 `logs/bot.log`。出现 `QQ bot ready` 表示 WebSocket Gateway 已连接成功。
+首次启动会自动创建 `data/bot.sqlite3`，无需安装或启动独立数据库服务。
+
+安装依赖后，也可以绕过常驻的 `uv run` 父进程，直接启动以进一步节省内存：
+
+```bash
+uv sync --frozen --no-dev
+.venv/bin/umamusume-qq-bot
+```
 
 如果所在网络必须使用 HTTP 代理，可选用：
 
@@ -193,8 +209,9 @@ IP 白名单配置。
 单角色模式
 ```
 
-Bot 会在内存中保存当前导演场景快照。当 Agent 内存 session 过期时，会依次尝试后端历史恢复和
-快照恢复。Bot 自身重启后，内存快照不会保留，但仍可使用后端 `场景历史`。
+Bot 会同时在内存和本地 SQLite 中保存导演场景快照。当 Agent session 过期时，会依次尝试后端
+历史恢复和本地快照恢复。Bot 自身或 Hugging Face Space 重启后，仍可使用本地 `场景历史`
+恢复。
 
 ## 与 Agent 前端的功能对应
 
@@ -211,6 +228,7 @@ Bot 会在内存中保存当前导演场景快照。当 Agent 内存 session 过
 | 多角色导演对话 | 支持 |
 | 导演历史恢复/删除 | 支持 |
 | 导演最后回复重生成 | 支持 |
+| 浏览器缓存恢复 | 使用服务器本地 SQLite 实现等价恢复能力 |
 | 浏览器文件导入导出 | 不适用于纯文本 QQ 命令 |
 | TTS 播放 | 根据后端能力检测；当前云端未启用 |
 
@@ -218,9 +236,29 @@ Bot 会在内存中保存当前导演场景快照。当 Agent 内存 session 过
 
 - 群聊使用 `member_openid`，私聊使用 `user_openid`。
 - Bot 将 QQ 用户标识通过 `uuid5` 转换为稳定 `user_uuid`。
-- Agent 按“用户 UUID + 角色”保存单角色历史。
-- 导演场景也使用同一个 `user_uuid` 隔离历史。
-- 当前状态存储在 Bot 进程内，Bot 重启后需要重新选择模式；Agent 后端历史不会因此主动删除。
+- 单角色消息成功返回后会写入本地 SQLite；Agent session 或远端文件丢失时，通过
+  `/history/import` 自动恢复。
+- 导演场景按相同 `user_uuid` 隔离，并在每次创建、推进、恢复和重新生成后保存完整公开快照。
+- 当前角色、交互模式、待发送事件和活动场景也会落盘，Bot 重启后可以继续使用。
+- `清空记录 确认` 和 `删除场景记录 <编号> 确认` 会同时删除远端与本地副本。
+
+数据库包含用户 OpenID 对应标识和对话正文，应按敏感数据保护。SQLite 使用 WAL 模式，备份时
+建议先停止 Bot，然后复制整个 `data` 目录。
+
+## 低内存服务器部署
+
+仅在服务器运行 QQ Bot、Agent 使用 Hugging Face Space 时，不需要部署 FastAPI、模型或独立
+数据库。Bot Python 进程实测约 `39 MB`；直接运行 `.venv/bin/umamusume-qq-bot` 时不会保留
+额外的 `uv run` 父进程。300 MB 空闲内存足够这种模式。
+
+如果使用 Docker，必须把 `data` 目录挂载到宿主机或持久卷，例如：
+
+```text
+/opt/umamusume-qq-bot/data  ->  /app/data
+```
+
+否则删除或重建容器时，本地恢复数据库也会被删除。普通 VPS 直接在固定工作目录运行时，默认
+`data/bot.sqlite3` 会正常保留。
 
 ## 开发与测试
 
@@ -233,4 +271,5 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 - `agent_client.py`：Agent HTTP API、鉴权及协议兼容
 - `dialogue_commands.py`：剧情事件命令协议
 - `bot_client.py`：QQ 事件和命令路由
-- `state_store.py`：用户、单角色和导演场景状态
+- `state_store.py`：内存状态及持久化接口
+- `persistence.py`：本地 SQLite 状态、单角色历史和导演快照
