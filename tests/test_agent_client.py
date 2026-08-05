@@ -66,6 +66,49 @@ class AgentClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(session.requests[0]["headers"])
 
+    async def test_chat_sends_dialogue_event_fields(self):
+        client = AgentClient(
+            base_url="http://agent.example",
+            timeout_seconds=5,
+            api_access_key="test-access-key",
+        )
+        session = _FakeSession({"action": "点头", "dialogue": "知道了。"})
+        client._session = session
+
+        reply = await client.chat(
+            "session-1",
+            "下雨了",
+            dialogue_event={
+                "speaker": {"actor_id": "narrator"},
+                "event_type": "scene_event",
+                "context_events": [{"content": "夜幕降临"}],
+            },
+        )
+
+        payload = session.requests[0]["json"]
+        self.assertEqual(reply, "动作：点头\n对白：知道了。")
+        self.assertEqual(payload["event_type"], "scene_event")
+        self.assertEqual(payload["context_events"], [{"content": "夜幕降临"}])
+        self.assertFalse(payload["generate_voice"])
+
+    async def test_create_director_session_uses_frontend_protocol(self):
+        client = AgentClient(base_url="http://agent.example", timeout_seconds=5)
+        session = _FakeSession({"session_id": "director-1", "events": []})
+        client._session = session
+
+        result = await client.create_director_session(
+            character_names=["爱慕织姬", "无声铃鹿"],
+            user_uuid="user-1",
+            template_id="city_park_afternoon",
+            story_outline="训练后偶遇",
+        )
+
+        self.assertEqual(result["session_id"], "director-1")
+        payload = session.requests[0]["json"]
+        self.assertEqual(payload["template_id"], "city_park_afternoon")
+        self.assertEqual(payload["character_names"], ["爱慕织姬", "无声铃鹿"])
+        self.assertEqual(payload["story_outline"], "训练后偶遇")
+
     def test_extracts_json_reply_v2(self):
         reply = AgentClient._extract_reply(
             {

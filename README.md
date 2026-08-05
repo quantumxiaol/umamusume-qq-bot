@@ -1,258 +1,236 @@
-# Umamusume Agent QQ Bot Server
+# Umamusume Agent QQ Bot
 
-基于[Umamusume Agent](https://github.com/quantumxiaol/umamusume-agent)，相当于提供了该项目的qq-bot客户端，该项目可以与角色进行对话。
+将 [Umamusume Agent](https://github.com/quantumxiaol/umamusume-agent) 接入 QQ 官方机器人。
+当前版本使用 QQ WebSocket Gateway 接收群聊和私聊消息，并适配 Agent `0.2.0`
+的 API key、结构化剧情事件、历史管理和多角色导演模式。
 
-当然最简单的方法是下一个[酒馆](https://github.com/SillyTavern/SillyTavern)，准备角色卡，酒馆的完成度比这两个高多了。角色的prompt可以从项目[agent-prompt](https://github.com/quantumxiaol/umamusume-agent-prompt/tree/main/examples)获取，我准备了一些现成的。
+## 当前连接方式
 
-## 示例
+QQ 侧使用 WebSocket：
 
-<!-- [对话界面](./png/interface.png) -->
-<img src="./pngs/AdmireVega.png" alt="机器人对话界面" style="zoom:100%;" />
+```text
+QQ 开放平台 WebSocket Gateway
+    ↓ 消息事件
+qq-botpy
+    ↓ HTTP API
+Umamusume Agent
+```
 
+- QQ 管理后台的消息接收方式请选择 `WebSocket`。
+- Bot 主动连接 QQ Gateway，不提供 Webhook，也不需要公网入站端口或回调 URL。
+- [腾讯当前维护的 QQBot 文档](https://github.com/tencent-connect/openclaw-qqbot/blob/main/README.zh.md#webhook-传输模式)
+  将 WebSocket 列为默认传输方式，并明确说明不需要公网 IP。
+- QQ 消息回复仍由 SDK 调用 QQ OpenAPI HTTP 接口完成。
 
-## QQ Bot 快速开始
+## 快速开始
 
-### 1) 环境变量
+### 1. 配置 `.env`
 
-在 `.env` 中至少配置：
+使用本地 Agent：
 
 ```env
 AppID=你的QQ机器人AppID
 AppSecret=你的QQ机器人AppSecret
 UMAMUSEME_AGENT_URL=http://127.0.0.1:1111
-UMAMUSEME_AGENT_API_ACCESS_KEY=与后端API_ACCESS_KEY相同的值
+UMAMUSEME_AGENT_API_ACCESS_KEY="与后端API_ACCESS_KEY相同的值"
 LOG_LEVEL=INFO
 ```
 
-新版 Agent 设置了 `API_ACCESS_KEY` 时，Bot 必须配置
-`UMAMUSEME_AGENT_API_ACCESS_KEY`。Bot 会在所有 Agent API 请求中发送
-`X-API-Key`；后端未启用 `API_ACCESS_KEY` 时可以留空。
+使用当前 Hugging Face Space：
 
-可选参数：
+```env
+AppID=你的QQ机器人AppID
+AppSecret=你的QQ机器人AppSecret
+UMAMUSEME_AGENT_URL=https://quantumxiaol-umamusume-agent.hf.space
+UMAMUSEME_AGENT_API_ACCESS_KEY="对应Space的API_ACCESS_KEY"
+LOG_LEVEL=INFO
+```
 
-- `UMAMUSUME_AGENT_URL`（兼容别名）
-- `AGENT_BASE_URL`（旧配置名，向后兼容）
-- `UMAMUSUME_AGENT_API_ACCESS_KEY`（正确拼写的兼容别名）
-- `AGENT_API_ACCESS_KEY`（兼容别名）
-- `AGENT_TIMEOUT_SECONDS`（默认 `600`，覆盖新版后端的模型调用与有限重试时间）
-- `CHARACTERS_CACHE_TTL_SECONDS`（默认 `300`）
-- QQ OpenAPI / WebSocket 出站连接会在启动时强制走 IPv4，避免双栈网络优先使用 IPv6 导致 QQ IP 白名单校验失败。
+Agent 设置了 `API_ACCESS_KEY` 时，Bot 会在所有受保护请求中发送 `X-API-Key`。
+配置同时兼容以下别名：
 
-### 2) 启动 Bot
+- `UMAMUSUME_AGENT_URL`
+- `AGENT_BASE_URL`
+- `UMAMUSUME_AGENT_API_ACCESS_KEY`
+- `AGENT_API_ACCESS_KEY`
 
-先启动你的 `umamusume-agent` 服务，再启动 QQ Bot。
+其他可选配置：
 
-推荐命令（项目根目录）：
+- `AGENT_TIMEOUT_SECONDS`：默认 `600`
+- `CHARACTERS_CACHE_TTL_SECONDS`：默认 `300`
+- `LOG_LEVEL`：默认 `INFO`
+
+### 2. 启动
+
+如果使用本地 Agent，先启动后端：
+
+```bash
+uvicorn umamusume_agent.server.dialogue_server:app \
+  --host 127.0.0.1 \
+  --port 1111
+```
+
+然后在本项目根目录启动 Bot：
 
 ```bash
 uv run umamusume-qq-bot
 ```
 
-等价命令（任选其一）：
+也可以使用：
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m umamusume_qq_bot
 python main.py
 ```
 
-启动成功后日志会输出到 `logs/bot.log`，并可看到类似 `QQ bot ready` 的日志。
+日志写入 `logs/bot.log`。出现 `QQ bot ready` 表示 WebSocket Gateway 已连接成功。
 
-#### 本地代理测试（无公网白名单 IP 时）：
+如果所在网络必须使用 HTTP 代理，可选用：
 
 ```bash
-# 方式1：使用环境变量
-export HTTPS_PROXY=http://127.0.0.1:10808
-export HTTP_PROXY=http://127.0.0.1:10808
-uv run umamusume-qq-bot-proxy
-
-# 方式2：命令行显式指定
 uv run umamusume-qq-bot-proxy --proxy http://127.0.0.1:10808
 ```
 
-说明：
-- `umamusume-qq-bot-proxy` 仅用于本地调试。它会在启动前 monkey patch `aiohttp.ClientSession`，为 QQ 平台域名请求强制注入代理，并启用 `trust_env=True`，不修改 `botpy` 源码。
-- 生产部署到公网固定 IP 后，直接使用 `uv run umamusume-qq-bot` 即可。
+代理启动器只是网络故障排查工具，正常 WebSocket 接入不需要代理、固定公网 IP 或旧版
+IP 白名单配置。
 
-公网固定 IP 部署启动（推荐线上）：
+## QQ 使用方式
+
+群聊中需要 `@机器人`，好友私聊可直接发送。
+
+### 通用命令
+
+```text
+帮助
+服务状态
+单角色模式
+导演模式
+```
+
+`服务状态` 会显示 Agent 版本、对话 API 版本、导演模式和 TTS 能力。
+
+### 单角色模式
+
+```text
+角色列表
+切换角色
+切换角色 <角色名或编号>
+当前角色
+查看记录
+清空记录 确认
+重新生成
+编辑上一句 <新内容>
+```
+
+选定角色后，直接发送文字就是训练员对白。Bot 会在 Agent session 过期时自动重新加载角色并恢复历史。
+
+### 剧情事件
+
+与当前 Agent 前端一致，QQ Bot 支持三种输入：
+
+```text
+对白 今天就练到这里吧。
+动作 把毛巾递给她。
+环境 夜幕降临，训练场开始下起小雨。
+```
+
+还可以先把多条事件加入队列，让它们在一次模型调用中形成完整上下文：
+
+```text
+加入动作 把毛巾放在长椅上。
+加入环境 训练场的灯亮了起来。
+待发送
+发送 今天就练到这里吧。
+```
+
+相关命令：
+
+```text
+加入对白 <内容>
+加入动作 <内容>
+加入环境 <内容>
+待发送
+清空待发送
+发送 <最后一句对白>
+```
+
+仅发送 `发送` 时，队列的最后一条事件会作为本轮最终事件。
+
+### 多角色导演模式
+
+进入导演模式：
+
+```text
+导演模式
+场景列表
+```
+
+使用预设场景：
+
+```text
+创建场景 1 | 爱慕织姬,无声铃鹿 | 训练结束后偶遇，逐渐聊到下一场比赛
+```
+
+使用简化的自定义场景：
+
+```text
+创建自定义场景 雨后的河边 | 爱慕织姬,无声铃鹿 | 河边散步 | 训练后放松交谈
+```
+
+场景创建后，直接发送文字，或使用 `对白`、`动作`、`环境` 和事件队列。导演会维护共享场景状态，
+并安排一至多位角色回应。
+
+导演模式命令：
+
+```text
+导演状态
+场景历史
+恢复场景 <编号>
+重新生成
+结束场景
+删除场景记录 <编号> 确认
+导演帮助
+单角色模式
+```
+
+Bot 会在内存中保存当前导演场景快照。当 Agent 内存 session 过期时，会依次尝试后端历史恢复和
+快照恢复。Bot 自身重启后，内存快照不会保留，但仍可使用后端 `场景历史`。
+
+## 与 Agent 前端的功能对应
+
+| Agent 前端能力 | QQ Bot |
+| --- | --- |
+| 角色选择与历史恢复 | 支持 |
+| JSON v2 动作/对白 | 支持，并兼容旧 `reply` |
+| 对白/动作/环境事件 | 支持 |
+| 多事件批量上下文 | 支持 |
+| 查看与清空历史 | 支持 |
+| 编辑上一句/重新生成 | 支持 |
+| 导演预设场景 | 支持 |
+| 导演自定义场景 | 支持简化文本格式 |
+| 多角色导演对话 | 支持 |
+| 导演历史恢复/删除 | 支持 |
+| 导演最后回复重生成 | 支持 |
+| 浏览器文件导入导出 | 不适用于纯文本 QQ 命令 |
+| TTS 播放 | 根据后端能力检测；当前云端未启用 |
+
+## 用户身份与历史
+
+- 群聊使用 `member_openid`，私聊使用 `user_openid`。
+- Bot 将 QQ 用户标识通过 `uuid5` 转换为稳定 `user_uuid`。
+- Agent 按“用户 UUID + 角色”保存单角色历史。
+- 导演场景也使用同一个 `user_uuid` 隔离历史。
+- 当前状态存储在 Bot 进程内，Bot 重启后需要重新选择模式；Agent 后端历史不会因此主动删除。
+
+## 开发与测试
 
 ```bash
-# 1) 确保 QQ 平台 IP 白名单已加入服务器公网出口 IP
-# 2) 线上环境建议不要设置代理
-unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
-
-# 3) 先启动 agent（同机部署示例）
-uvicorn umamusume_agent.server.dialogue_server:app --host 127.0.0.1 --port 1111
-
-# 4) 启动 QQ Bot（无需 proxy runner）
-uv run umamusume-qq-bot
+PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 ```
 
-说明：
-- 线上建议 `UMAMUSEME_AGENT_URL` 使用内网或本机地址（如 `http://127.0.0.1:1111`）。
-- 该 bot 为主动出网连接 QQ 网关，一般不需要额外开放入站端口给 bot 本体。
+核心实现：
 
-#### 白名单与代理出口 IP 排查：
-
-```bash
-# 1) 让 .env 生效
-set -a
-source .env
-set +a
-
-# 2) 指定本地代理
-PROXY="http://127.0.0.1:10808"
-
-# 3) 通过代理查看当前出口 IP（把该 IP 加到 QQ 平台白名单）
-curl -sS -x "$PROXY" https://4.ipw.cn
-curl -sS -x "$PROXY" https://ifconfig.me
-
-# 4) 用 AppID + AppSecret 换取 access_token
-TOKEN_JSON="$(curl -sS -x "$PROXY" https://bots.qq.com/app/getAppAccessToken \
-  -H 'Content-Type: application/json' \
-  --data-raw "{\"appId\":\"$AppID\",\"clientSecret\":\"$AppSecret\"}")"
-echo "$TOKEN_JSON"
-ACCESS_TOKEN="$(printf '%s' "$TOKEN_JSON" | python -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""), end="")' | tr -d '\r\n')"
-
-# 5) 用 access_token 验证 /users/@me
-curl -sS -x "$PROXY" https://api.sgroup.qq.com/users/@me \
-  -H "Authorization: QQBot ${ACCESS_TOKEN}" \
-  -H "X-Union-Appid: ${AppID}" \
-  -w '\nStatus: %{http_code}\n'
-```
-
-结果解释：
-- 返回机器人信息（通常 HTTP 200）表示鉴权与白名单通过。
-- 返回 `11298 接口访问源IP不在白名单` 表示代理出口 IP 还未加入白名单，或代理在切换出口 IP。
-- 返回 `11241 请求头Authorization参数格式错误` 通常表示 `ACCESS_TOKEN` 为空或包含异常字符（换行/引号）。
-- `.env` 里的 `Token` 字段不是这个新鉴权流程的必需项，建议以 `AppID + AppSecret` 实时换取 token 为准。
-
-如果不走代理、只验证当前 IPv4 出口，可把上面的 `curl` 改成 `curl -4`。Bot 启动时也会强制 aiohttp/botpy 使用 IPv4。
-
-### 3) 群聊内使用方式
-
-把机器人拉进群后，群友 `@机器人`：
-- 首次交互会自动收到一条功能说明和命令说明。
-
-- 发送 `角色列表`：查看并进入角色选择模式
-- 发送 `切换角色`：重新选择角色
-- 发送 `当前角色` 或 `查看角色`：查看当前角色
-- 发送 `查看记录`：查看当前角色最近对话记录
-- 发送 `编号` 或 `角色名`：确定角色
-- 已选角色后，直接 `@机器人 + 文字`：进入角色对话
-
-### 4) 好友私聊使用方式
-
-添加机器人好友后，直接发送消息即可（不需要 `@`）：
-- 首次交互会自动收到一条功能说明和命令说明。
-
-- 发送 `角色列表`：查看并进入角色选择模式
-- 发送 `切换角色`：重新选择角色
-- 发送 `当前角色` 或 `查看角色`：查看当前角色
-- 发送 `查看记录`：查看当前角色最近对话记录
-- 发送 `编号` 或 `角色名`：确定角色
-- 已选角色后，直接发送文字：进入角色对话
-
-用户记忆说明：
-
-- Bot 会使用 QQ 侧用户稳定标识（群聊 `member_openid` / 好友 `user_openid`）生成固定 UUID（`uuid5`）作为 `user_uuid`。
-- 每次切换角色时都会将该 `user_uuid` 传给 `umamusume-agent` 的 `/load_character`，从而按“同一用户 + 同一角色”恢复历史。
-
-## Umamusume Agent接口简述
-
-- `POST /load_character`：加载角色并创建会话
-- `POST /chat`：非流式对话，返回结构化 `action` / `dialogue`
-- `POST /chat_stream`：流式对话（SSE）
-- `GET /characters`：可用角色列表
-- `GET /capabilities`：后端能力协商
-- `GET /history`：查询指定用户的对话历史
-- `GET /audio?path=...`：音频文件访问
-
-后端配置了 `API_ACCESS_KEY` 时，除根路径和音频等少数公开路由外，请求都必须携带：
-
-```http
-X-API-Key: <API_ACCESS_KEY>
-```
-
-### 对话请求参数（`/chat` 与 `/chat_stream`）
-
-- `session_id`：会话 ID（由 `/load_character` 返回）
-- `message`：用户输入文本
-- `generate_voice`：是否生成语音（默认 `false`）
-- `text_only`：兼容字段；设为 `true` 时禁用语音，不再改变结构化回复格式
-
-参数组合说明：
-- `generate_voice=false, text_only=false`：返回结构化 `action` / `dialogue`，不生成语音。
-- `generate_voice=true, text_only=false`：结构化文本回复，并触发 TTS 生成语音。
-- `text_only=true`：仍返回结构化动作与对白，但强制不生成语音。
-
-新版 `/chat` 返回示例：
-
-```json
-{
-  "action": "爱慕织姬轻轻点头。",
-  "dialogue": "训练员，我们开始吧。",
-  "message": {
-    "schema_version": 2,
-    "role": "assistant",
-    "content": "训练员，我们开始吧。",
-    "action": "爱慕织姬轻轻点头。",
-    "dialogue": "训练员，我们开始吧。",
-    "source_format": "json_v2"
-  }
-}
-```
-
-Bot 会把它转换为适合 QQ 展示的两行“动作/对白”文本，同时继续兼容旧版
-`{"reply":"..."}` 响应。
-
-### 会话生命周期与内存控制
-
-- 会话通过内存字典管理（`session_id -> session`）。
-- 每条消息会刷新会话活跃时间；超出 `DIALOGUE_SESSION_TTL_SECONDS` 的空闲会话会被清理。
-- 服务启动后会有后台任务按 `DIALOGUE_SESSION_CLEANUP_INTERVAL_SECONDS` 周期扫描并删除过期会话。
-- 对话历史会按 `DIALOGUE_SESSION_HISTORY_MAX_MESSAGES` 自动裁剪，避免单会话无限增长。
-- 会话过期或被删除后，再用旧 `session_id` 调用 `/chat` 会返回 `404`，需要重新 `/load_character` 获取新会话。
-
-## 无前端：如何选定角色并对话
-
-核心逻辑：角色是通过 `POST /load_character` 绑定到 `session_id` 的。后续 `/chat` 只需要传这个 `session_id`。
-
-### 1) 查看可用角色（可选）
-
-```bash
-curl -s http://127.0.0.1:1111/characters \
-  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY"
-```
-
-### 2) 选定角色并创建会话
-
-```bash
-curl -s -X POST http://127.0.0.1:1111/load_character \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY" \
-  -d '{"character_name":"爱慕织姬"}'
-```
-
-返回里拿到 `session_id`，例如：
-
-```json
-{
-  "session_id": "0f0f7f4f-xxxx-xxxx-xxxx-8b0b5f9a8d2b",
-  "character_name": "爱慕织姬"
-}
-```
-
-### 3) 用该会话进行对话
-
-```bash
-curl -s -X POST http://127.0.0.1:1111/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $UMAMUSEME_AGENT_API_ACCESS_KEY" \
-  -d '{
-    "session_id":"0f0f7f4f-xxxx-xxxx-xxxx-8b0b5f9a8d2b",
-    "message":"你好，今天训练安排是什么？",
-    "text_only":true
-  }'
-```
-
-如果想切换角色，重新调用一次 `/load_character` 获取新的 `session_id` 即可。
+- `agent_client.py`：Agent HTTP API、鉴权及协议兼容
+- `dialogue_commands.py`：剧情事件命令协议
+- `bot_client.py`：QQ 事件和命令路由
+- `state_store.py`：用户、单角色和导演场景状态

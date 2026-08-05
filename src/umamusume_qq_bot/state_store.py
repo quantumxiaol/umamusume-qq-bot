@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -14,6 +15,14 @@ class ConversationState:
     has_seen_welcome: bool = False
     awaiting_character_choice: bool = False
     character_options: list[str] = field(default_factory=list)
+    interaction_mode: str = "single"
+    queued_events: list[dict[str, Any]] = field(default_factory=list)
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    director_session_id: str | None = None
+    director_snapshot: dict[str, Any] | None = None
+    director_templates: list[dict[str, Any]] = field(default_factory=list)
+    director_history_options: list[dict[str, Any]] = field(default_factory=list)
+    last_director_event_id: str | None = None
     updated_at: float = field(default_factory=time.time)
 
 

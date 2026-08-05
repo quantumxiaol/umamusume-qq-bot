@@ -4,6 +4,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -92,12 +93,47 @@ class AgentClient:
             restored_history_messages=max(restored_history_messages, 0),
         )
 
-    async def chat(self, session_id: str, message: str, text_only: bool = False) -> str:
+    async def get_status(self) -> dict[str, Any]:
+        data = await self._request_json("GET", "/")
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from /")
+        return data
+
+    async def get_capabilities(self) -> dict[str, Any]:
+        try:
+            data = await self._request_json("GET", "/capabilities")
+        except AgentHttpError as exc:
+            if exc.status == 404:
+                return {}
+            raise
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from /capabilities")
+        return data
+
+    async def chat(
+        self,
+        session_id: str,
+        message: str,
+        text_only: bool = False,
+        generate_voice: bool = False,
+        dialogue_event: dict[str, Any] | None = None,
+    ) -> str:
         payload = {
             "session_id": session_id,
             "message": message,
             "text_only": text_only,
+            "generate_voice": generate_voice,
         }
+        if dialogue_event:
+            for key in (
+                "speaker",
+                "event_type",
+                "target_actor_ids",
+                "context_events",
+            ):
+                value = dialogue_event.get(key)
+                if value is not None:
+                    payload[key] = value
         try:
             data = await self._request_json("POST", "/chat", payload=payload)
         except AgentHttpError as exc:
@@ -105,6 +141,147 @@ class AgentClient:
                 raise AgentSessionExpiredError("session expired") from exc
             raise
         return self._extract_reply(data)
+
+    async def import_history(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        replace_current: bool = True,
+        source: str = "qq_bot",
+    ) -> dict[str, Any]:
+        data = await self._request_json(
+            "POST",
+            "/history/import",
+            payload={
+                "session_id": session_id,
+                "messages": messages,
+                "replace_current": replace_current,
+                "source": source,
+            },
+        )
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from /history/import")
+        return data
+
+    async def clear_history(self, user_uuid: str, character_name: str) -> dict[str, Any]:
+        data = await self._request_json(
+            "DELETE",
+            "/history",
+            params={"user_uuid": user_uuid, "character_name": character_name},
+        )
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from DELETE /history")
+        return data
+
+    async def list_director_templates(self) -> list[dict[str, Any]]:
+        data = await self._request_json("GET", "/director/templates")
+        if not isinstance(data, dict):
+            raise AgentError("Invalid response from /director/templates")
+        templates = data.get("templates")
+        if not isinstance(templates, list):
+            return []
+        return [item for item in templates if isinstance(item, dict)]
+
+    async def create_director_session(
+        self,
+        character_names: list[str],
+        user_uuid: str,
+        template_id: str | None = None,
+        custom_scene: dict[str, Any] | None = None,
+        story_outline: str = "",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "character_names": character_names,
+            "user_uuid": user_uuid,
+            "story_outline": story_outline,
+        }
+        if template_id:
+            payload["template_id"] = template_id
+        if custom_scene:
+            payload["custom_scene"] = custom_scene
+        return await self._request_dict("POST", "/director/sessions", payload=payload)
+
+    async def director_turn(
+        self,
+        session_id: str,
+        user_uuid: str,
+        events: list[dict[str, Any]],
+        generate_voice: bool = False,
+    ) -> dict[str, Any]:
+        return await self._request_dict(
+            "POST",
+            "/director/turn",
+            payload={
+                "session_id": session_id,
+                "user_uuid": user_uuid,
+                "events": events,
+                "generate_voice": generate_voice,
+            },
+        )
+
+    async def get_director_history(self, user_uuid: str, limit: int = 20) -> list[dict[str, Any]]:
+        data = await self._request_dict(
+            "GET",
+            "/director/history",
+            params={"user_uuid": user_uuid, "limit": max(1, limit)},
+        )
+        scenes = data.get("scenes")
+        if not isinstance(scenes, list):
+            return []
+        return [item for item in scenes if isinstance(item, dict)]
+
+    async def resume_director_history(self, session_id: str, user_uuid: str) -> dict[str, Any]:
+        encoded_session_id = quote(session_id, safe="")
+        return await self._request_dict(
+            "POST",
+            f"/director/history/{encoded_session_id}/resume",
+            payload={"user_uuid": user_uuid},
+        )
+
+    async def recover_director_session(
+        self,
+        snapshot: dict[str, Any],
+        user_uuid: str,
+    ) -> dict[str, Any]:
+        return await self._request_dict(
+            "POST",
+            "/director/sessions/recover",
+            payload={"user_uuid": user_uuid, "snapshot": snapshot},
+        )
+
+    async def delete_director_session(self, session_id: str, user_uuid: str) -> dict[str, Any]:
+        encoded_session_id = quote(session_id, safe="")
+        return await self._request_dict(
+            "DELETE",
+            f"/director/sessions/{encoded_session_id}",
+            params={"user_uuid": user_uuid},
+        )
+
+    async def delete_director_history(self, session_id: str, user_uuid: str) -> dict[str, Any]:
+        encoded_session_id = quote(session_id, safe="")
+        return await self._request_dict(
+            "DELETE",
+            f"/director/history/{encoded_session_id}",
+            params={"user_uuid": user_uuid},
+        )
+
+    async def regenerate_director_reply(
+        self,
+        session_id: str,
+        event_id: str,
+        user_uuid: str,
+        generate_voice: bool = False,
+    ) -> dict[str, Any]:
+        encoded_session_id = quote(session_id, safe="")
+        encoded_event_id = quote(event_id, safe="")
+        return await self._request_dict(
+            "POST",
+            f"/director/sessions/{encoded_session_id}/events/{encoded_event_id}/regenerate",
+            payload={
+                "user_uuid": user_uuid,
+                "generate_voice": generate_voice,
+            },
+        )
 
     async def get_history(self, user_uuid: str, character_name: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"user_uuid": user_uuid}
@@ -146,6 +323,18 @@ class AgentClient:
                 return json.loads(body)
             except json.JSONDecodeError as exc:
                 raise AgentError(f"Non-JSON response from {path}: {body[:200]}") from exc
+
+    async def _request_dict(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = await self._request_json(method, path, payload=payload, params=params)
+        if not isinstance(data, dict):
+            raise AgentError(f"Invalid response from {path}")
+        return data
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
