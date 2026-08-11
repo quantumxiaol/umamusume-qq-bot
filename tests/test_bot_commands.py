@@ -8,7 +8,7 @@ from umamusume_qq_bot.agent_client import (
     AgentSessionExpiredError,
     LoadCharacterResult,
 )
-from umamusume_qq_bot.bot_client import UmamusumeBotClient
+from umamusume_qq_bot.bot_client import DOCS_URL, UmamusumeBotClient
 from umamusume_qq_bot.state_store import ConversationStore
 
 
@@ -149,6 +149,29 @@ def _make_bot(agent: _FakeAgent) -> UmamusumeBotClient:
 
 
 class BotCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_interaction_uses_short_welcome(self):
+        agent = _FakeAgent()
+        bot = _make_bot(agent)
+
+        reply = await bot._handle_user_input("new-user", "你好")
+
+        self.assertIn("普通文字默认是对白", reply)
+        self.assertIn("请选择角色", reply)
+        self.assertNotIn("加入对白|动作|环境", reply)
+
+    async def test_topic_help_and_docs_link(self):
+        agent = _FakeAgent()
+        bot = _make_bot(agent)
+        state = bot._store.get("qq-user")
+        state.has_seen_welcome = True
+
+        event_help = await bot._handle_user_input("qq-user", "帮助 事件")
+        docs = await bot._handle_user_input("qq-user", "文档")
+
+        self.assertIn("动作：望向窗外", event_help)
+        self.assertIn(f"{DOCS_URL}#events", event_help)
+        self.assertIn(DOCS_URL, docs)
+
     async def test_queued_scene_event_is_sent_as_context(self):
         agent = _FakeAgent()
         bot = _make_bot(agent)

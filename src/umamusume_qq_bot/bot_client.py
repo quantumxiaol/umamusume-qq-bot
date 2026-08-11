@@ -34,35 +34,71 @@ from .text_utils import (
 
 LOGGER = logging.getLogger(__name__)
 
+DOCS_URL = "https://quantumxiaol.github.io/umamusume-qq-bot/"
+
 COMMAND_GUIDE_TEXT = (
     "常用命令：\n"
-    "- 角色列表 / 切换角色 <角色名或编号>\n"
-    "- 当前角色 / 查看记录 / 清空记录 确认\n"
-    "- 对白 <内容> / 动作 <内容> / 环境 <内容>\n"
-    "- 加入对白|动作|环境 <内容>，再发送「发送 <最后一句>」\n"
-    "- 待发送 / 清空待发送 / 重新生成 / 编辑上一句 <新内容>\n"
-    "- 导演模式 / 单角色模式 / 导演帮助\n"
-    "- 服务状态 / 帮助"
+    "角色列表｜切换角色 <名称或编号>｜当前角色\n"
+    "查看记录｜重新生成｜编辑上一句 <新内容>\n"
+    "导演模式｜单角色模式｜服务状态"
 )
 
 DIRECTOR_GUIDE_TEXT = (
-    "导演模式命令：\n"
-    "- 场景列表\n"
-    "- 创建场景 <编号或名称> | <角色1,角色2> | <可选剧情大纲>\n"
-    "- 创建自定义场景 <地点> | <角色1,角色2> | <可选场景名> | <可选剧情大纲>\n"
-    "- 对白/动作/环境 <内容>，或直接发送文字\n"
-    "- 导演状态 / 场景历史 / 恢复场景 <编号>\n"
-    "- 重新生成 / 结束场景 / 删除场景记录 <编号> 确认\n"
-    "- 单角色模式"
+    "导演模式帮助：\n"
+    "1. 发送「场景列表」查看预设。\n"
+    "2. 创建场景：\n"
+    "创建场景 1 | 爱慕织姬,东海帝皇 | 午后偶遇\n"
+    "3. 创建后可直接对话，也可发送「动作/环境 <内容>」。\n"
+    "管理：导演状态｜场景历史｜恢复场景 <编号>｜重新生成｜结束场景\n"
+    "自定义：创建自定义场景 <地点> | <角色1,角色2> | <场景名> | <剧情大纲>\n"
+    f"完整手册：{DOCS_URL}#director"
 )
 
 WELCOME_TEXT = (
     "你好，我是赛马娘角色对话机器人。\n"
-    "支持单角色对话、剧情事件和多角色导演模式。\n"
-    f"{COMMAND_GUIDE_TEXT}"
+    "普通文字默认是对白；也可以用「动作」和「环境」推动剧情。\n"
+    "发送「帮助」查看命令，发送「文档」打开完整手册。"
 )
 
-HELP_TEXT = f"{COMMAND_GUIDE_TEXT}\n群聊中 @我 + 内容，好友私聊可直接发送。"
+HELP_TEXT = (
+    "使用帮助：\n"
+    "1.「角色列表」→ 回复编号或名称 → 直接聊天。\n"
+    "2. 普通文字是对白；也可发送「动作 <内容>」「环境 <内容>」。\n"
+    "3. 多角色剧情发送「导演模式」。\n"
+    f"{COMMAND_GUIDE_TEXT}\n"
+    "分主题：单角色帮助｜事件帮助｜导演帮助｜历史帮助\n"
+    "群聊需 @我，好友私聊可直接发送。\n"
+    f"完整手册：{DOCS_URL}"
+)
+
+SINGLE_GUIDE_TEXT = (
+    "单角色模式帮助：\n"
+    "角色列表｜切换角色 <名称或编号>｜当前角色\n"
+    "选择后直接发送文字即可对话。\n"
+    "重新生成｜编辑上一句 <新内容>\n"
+    "查看记录｜清空记录 确认\n"
+    f"完整手册：{DOCS_URL}#start"
+)
+
+EVENT_GUIDE_TEXT = (
+    "剧情事件帮助：\n"
+    "对白 <内容>：训练员说出的话；普通文字也是对白。\n"
+    "动作 <内容>：训练员做出的行为。\n"
+    "环境 <内容>：天气、声音或场景变化。\n"
+    "可用空格或冒号，例如「动作：望向窗外」。\n"
+    "组合一轮：先发送「加入动作/环境 <内容>」，再发送「发送 <最后一句>」。\n"
+    "查看队列：待发送｜清空待发送\n"
+    f"完整手册：{DOCS_URL}#events"
+)
+
+HISTORY_GUIDE_TEXT = (
+    "历史记录帮助：\n"
+    "查看记录：显示当前角色最近的消息。\n"
+    "清空记录 确认：删除当前角色的本地和远端历史。\n"
+    "场景历史：查看导演场景；恢复场景 <编号> 可继续。\n"
+    "Bot 会把历史保存在服务器 SQLite 中，HF 会话失效后可自动恢复。\n"
+    f"完整手册：{DOCS_URL}#storage"
+)
 
 
 class UmamusumeBotClient(botpy.Client):
@@ -157,8 +193,16 @@ class UmamusumeBotClient(botpy.Client):
     async def _dispatch_input(self, state: ConversationState, normalized: str) -> str:
         if normalized in {"帮助", "help", "/help"}:
             return HELP_TEXT
+        if normalized in {"单角色帮助", "单人帮助", "帮助 单角色", "帮助 单人"}:
+            return SINGLE_GUIDE_TEXT
+        if normalized in {"事件帮助", "剧情帮助", "帮助 事件", "帮助 剧情"}:
+            return EVENT_GUIDE_TEXT
         if normalized in {"导演帮助", "场景帮助"}:
             return DIRECTOR_GUIDE_TEXT
+        if normalized in {"历史帮助", "记录帮助", "帮助 历史", "帮助 记录"}:
+            return HISTORY_GUIDE_TEXT
+        if normalized in {"文档", "使用手册", "在线文档", "教程"}:
+            return f"完整使用手册：\n{DOCS_URL}"
         if normalized in {"服务状态", "后端状态", "status"}:
             return await self._show_service_status(state)
         if normalized in {"单角色模式", "单人模式"}:

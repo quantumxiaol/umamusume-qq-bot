@@ -42,6 +42,18 @@ MODE_PREFIXES = {
     "环境": "scene_event",
 }
 
+PREFIX_SEPARATORS = " \u3000:："
+
+
+def _content_after_prefix(text: str, prefix: str) -> str | None:
+    if not text.startswith(prefix):
+        return None
+    suffix = text[len(prefix) :]
+    if not suffix or suffix[0] not in PREFIX_SEPARATORS:
+        return None
+    content = suffix.lstrip(PREFIX_SEPARATORS)
+    return content or None
+
 
 def build_dialogue_event(content: str, input_mode: str = "dialogue") -> dict[str, Any]:
     text = (content or "").strip()
@@ -59,18 +71,18 @@ def build_dialogue_event(content: str, input_mode: str = "dialogue") -> dict[str
 def parse_direct_event(text: str) -> dict[str, Any]:
     normalized = (text or "").strip()
     for prefix, input_mode in MODE_PREFIXES.items():
-        marker = f"{prefix} "
-        if normalized.startswith(marker):
-            return build_dialogue_event(normalized[len(marker) :], input_mode)
+        content = _content_after_prefix(normalized, prefix)
+        if content is not None:
+            return build_dialogue_event(content, input_mode)
     return build_dialogue_event(normalized, "dialogue")
 
 
 def parse_queue_event(text: str) -> dict[str, Any] | None:
     normalized = (text or "").strip()
     for prefix, input_mode in MODE_PREFIXES.items():
-        marker = f"加入{prefix} "
-        if normalized.startswith(marker):
-            return build_dialogue_event(normalized[len(marker) :], input_mode)
+        content = _content_after_prefix(normalized, f"加入{prefix}")
+        if content is not None:
+            return build_dialogue_event(content, input_mode)
     return None
 
 
